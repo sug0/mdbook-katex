@@ -185,64 +185,82 @@ impl KatexProcessor {
         stylesheet_header: &String,
     ) -> String {
         let mut rendered_content = stylesheet_header.clone();
-        // render display equations
-        let content = Self::render_between_delimiters(&raw_content, "$$", display_opts, false);
-        // render inline equations
-        let content = Self::render_between_delimiters(&content, "$", inline_opts, true);
+        let content = Self::render(&raw_content, display_opts, inline_opts);
         rendered_content.push_str(&content);
         rendered_content
     }
 
-    // render equations between given delimiters, with specified options
-    fn render_between_delimiters(
-        raw_content: &str,
-        delimiters: &str,
-        opts: &katex::Opts,
-        escape_backslash: bool,
-    ) -> String {
-        let mut rendered_content = String::new();
-        let mut inside_delimiters = false;
-        for item in Self::split(&raw_content, &delimiters, escape_backslash) {
-            if inside_delimiters {
-                // try to render equation
-                if let Ok(rendered) = katex::render_with_opts(&item, opts) {
-                    rendered_content.push_str(&rendered)
-                // if rendering fails, keep the unrendered equation
-                } else {
-                    rendered_content.push_str(&item)
-                }
-            // outside delimiters
-            } else {
-                rendered_content.push_str(&item)
-            }
-            inside_delimiters = !inside_delimiters;
-        }
-        rendered_content
-    }
+    fn render(string: &str, display_opts: &katex::Opts, inline_opts: &katex::Opts) -> String {
+        let mut result = String::new();
 
-    fn split(string: &str, separator: &str, escape_backslash: bool) -> Vec<String> {
-        let mut result = Vec::new();
-        let mut splits = string.split(separator);
-        let mut current_split = splits.next();
-        // iterate over splits
-        while let Some(substring) = current_split {
-            let mut result_split = String::from(substring);
-            if escape_backslash {
-                // while the current split ends with a backslash
-                while let Some('\\') = current_split.unwrap().chars().last() {
-                    // removes the backslash, add the separator back, and add the next split
-                    result_split.pop();
-                    result_split.push_str(separator);
-                    current_split = splits.next();
-                    if let Some(split) = current_split {
-                        result_split.push_str(split);
+        let mut past_char = '\0';
+        let mut in_codeblocks = false;
+        let mut in_display_math = false;
+        let mut in_inline_math = false;
+
+        let mut temp_string = String::new();
+        for c in string.chars() {
+            temp_string.push(c);
+            // println!("{}", temp_string);
+            if '\\' == past_char || '\\' == c {
+                // do nothing: skip backslash escapes
+            } else if '`' == c {
+                if '`' == past_char {
+                    // do nothing: skip muti-backtick
+                } else {
+                    in_codeblocks = !in_codeblocks;
+                }
+            } else if in_codeblocks {
+                // do nothing: skip codeblocks
+            } else if '$' == c {
+                if '$' != past_char {
+                    // '$'
+                    if in_display_math {
+                        // do nothing: wait for double dollar
+                    } else if in_inline_math {
+                        in_inline_math = false;
+                        let tmp_string_len = temp_string.len();
+                        result += &Self::try_katex_render(
+                            &temp_string[1..tmp_string_len - 1],
+                            inline_opts,
+                        );
+                        temp_string = String::new();
+                    } else {
+                        temp_string.pop();
+                        result += &temp_string;
+                        in_inline_math = true;
+                        in_display_math = false;
+                        temp_string = "$".to_string();
+                    }
+                } else {
+                    // '$$'
+                    if in_display_math {
+                        in_display_math = false;
+                        let tmp_string_len = temp_string.len();
+                        result += &Self::try_katex_render(
+                            &temp_string[2..tmp_string_len - 2],
+                            display_opts,
+                        );
+                        temp_string = String::new();
+                    } else {
+                        in_inline_math = false;
+                        in_display_math = true;
                     }
                 }
             }
-            result.push(result_split);
-            current_split = splits.next()
+            past_char = c;
         }
+        result += &temp_string;
         result
+    }
+
+    fn try_katex_render(item: &str, opts: &katex::Opts) -> String {
+        if let Ok(rendered) = katex::render_with_opts(&item, opts) {
+            // println!("render : {} -> {}", item, rendered);
+            rendered
+        } else {
+            item.to_string()
+        }
     }
 }
 
