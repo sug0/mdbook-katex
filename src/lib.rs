@@ -1,12 +1,7 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::vec::Vec;
 
-use lazy_static::lazy_static;
-use regex::Regex;
 use serde_derive::{Deserialize, Serialize};
 use toml;
 
@@ -15,7 +10,6 @@ use mdbook::errors::Error;
 use mdbook::errors::Result;
 use mdbook::preprocess::{Preprocessor, PreprocessorContext};
 use mdbook::renderer::{RenderContext, Renderer};
-use mdbook::utils::fs::path_to_root;
 
 #[derive(Deserialize, Serialize)]
 #[serde(default, rename_all = "kebab-case")]
@@ -95,21 +89,9 @@ impl Preprocessor for KatexProcessor {
         // enforce config requirements
         enforce_config(&ctx.config);
         // parse TOML config
-        let cfg = get_config(&ctx.config)?;
-        let (inline_opts, display_opts) = self.build_opts(&ctx, &cfg);
-        // get stylesheet header
-        let stylesheet_header_generator =
-            katex_header(&ctx.root, &ctx.config.build.build_dir, &cfg)?;
         book.for_each_mut(|item| {
             if let BookItem::Chapter(chapter) = item {
-                let stylesheet_header =
-                    stylesheet_header_generator(path_to_root(chapter.path.clone().unwrap()));
-                chapter.content = self.process_chapter(
-                    &chapter.content,
-                    &inline_opts,
-                    &display_opts,
-                    &stylesheet_header,
-                )
+                chapter.content = self.process_chapter(&chapter.content)
             }
         });
         Ok(book)
@@ -121,90 +103,19 @@ impl Preprocessor for KatexProcessor {
 }
 
 impl KatexProcessor {
-    fn build_opts(
-        &self,
-        ctx: &PreprocessorContext,
-        cfg: &KatexConfig,
-    ) -> (katex::Opts, katex::Opts) {
-        let configure_katex_opts = || -> katex::OptsBuilder {
-            katex::Opts::builder()
-                .leqno(cfg.leqno)
-                .fleqn(cfg.fleqn)
-                .throw_on_error(cfg.throw_on_error)
-                .error_color(cfg.error_color.clone())
-                .min_rule_thickness(cfg.min_rule_thickness)
-                .max_size(cfg.max_size)
-                .max_expand(cfg.max_expand)
-                .trust(cfg.trust)
-                .clone()
-        };
-        // load macros as a HashMap
-        let macros = Self::load_macros(&ctx, &cfg.macros);
-        // inline rendering options
-        let inline_opts = configure_katex_opts()
-            .display_mode(false)
-            .output_type(katex::OutputType::Html)
-            .macros(macros.clone())
-            .build()
-            .unwrap();
-        // display rendering options
-        let display_opts = configure_katex_opts()
-            .display_mode(true)
-            .output_type(katex::OutputType::Html)
-            .macros(macros)
-            .build()
-            .unwrap();
-        (inline_opts, display_opts)
-    }
-
-    fn load_macros(
-        ctx: &PreprocessorContext,
-        macros_path: &Option<String>,
-    ) -> HashMap<String, String> {
-        // load macros as a HashMap
-        let mut map = HashMap::new();
-        if let Some(path) = get_macro_path(&ctx.root, &macros_path) {
-            let macro_str = load_as_string(&path);
-            for couple in macro_str.split("\n") {
-                // only consider lines starting with a backslash
-                if let Some('\\') = couple.chars().next() {
-                    let couple: Vec<&str> = couple.splitn(2, ":").collect();
-                    map.insert(String::from(couple[0]), String::from(couple[1]));
-                }
-            }
-        }
-        map
-    }
-
     // render Katex equations in HTML, and add the Katex CSS
-    fn process_chapter(
-        &self,
-        raw_content: &str,
-        inline_opts: &katex::Opts,
-        display_opts: &katex::Opts,
-        stylesheet_header: &String,
-    ) -> String {
-        let mut rendered_content = stylesheet_header.clone();
-        let content = Self::render(&raw_content, display_opts, inline_opts);
-        rendered_content.push_str(&content);
-        rendered_content
+    fn process_chapter(&self, raw_content: &str) -> String {
+        return Self::render(&raw_content);
     }
 
-    fn render(string: &str, display_opts: &katex::Opts, inline_opts: &katex::Opts) -> String {
+    fn render(string: &str) -> String {
         let mut result = String::new();
 
         let mut past_char = '\0';
         let mut in_codeblocks = false;
-        let mut in_display_math = false;
-        let mut in_inline_math = false;
-
-        let mut temp_string = String::new();
         for c in string.chars() {
-            temp_string.push(c);
             // println!("{}", temp_string);
-            if '\\' == past_char || '\\' == c {
-                // do nothing: skip backslash escapes
-            } else if '`' == c {
+            if '`' == c {
                 if '`' == past_char {
                     // do nothing: skip muti-backtick
                 } else {
@@ -212,55 +123,13 @@ impl KatexProcessor {
                 }
             } else if in_codeblocks {
                 // do nothing: skip codeblocks
-            } else if '$' == c {
-                if '$' != past_char {
-                    // '$'
-                    if in_display_math {
-                        // do nothing: wait for double dollar
-                    } else if in_inline_math {
-                        in_inline_math = false;
-                        let tmp_string_len = temp_string.len();
-                        result += &Self::try_katex_render(
-                            &temp_string[1..tmp_string_len - 1],
-                            inline_opts,
-                        );
-                        temp_string = String::new();
-                    } else {
-                        temp_string.pop();
-                        result += &temp_string;
-                        in_inline_math = true;
-                        in_display_math = false;
-                        temp_string = "$".to_string();
-                    }
-                } else {
-                    // '$$'
-                    if in_display_math {
-                        in_display_math = false;
-                        let tmp_string_len = temp_string.len();
-                        result += &Self::try_katex_render(
-                            &temp_string[2..tmp_string_len - 2],
-                            display_opts,
-                        );
-                        temp_string = String::new();
-                    } else {
-                        in_inline_math = false;
-                        in_display_math = true;
-                    }
-                }
+            } else if '_' == c {
+                result.push('\\');
             }
+            result.push(c);
             past_char = c;
         }
-        result += &temp_string;
-        result
-    }
-
-    fn try_katex_render(item: &str, opts: &katex::Opts) -> String {
-        if let Ok(rendered) = katex::render_with_opts(&item, opts) {
-            // println!("render : {} -> {}", item, rendered);
-            rendered
-        } else {
-            item.to_string()
-        }
+        return result;
     }
 }
 
@@ -293,95 +162,6 @@ pub fn load_as_string(path: &Path) -> String {
         Ok(_) => (),
     };
     string
-}
-
-fn katex_header(
-    build_root: &PathBuf,
-    build_dir: &PathBuf,
-    cfg: &KatexConfig,
-) -> Result<Box<dyn Fn(String) -> String>, Error> {
-    // constants
-    let cdn_root = "https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/";
-    let stylesheet_url = format!("{}katex.min.css", cdn_root);
-    let integrity = "sha384-AfEj0r4/OFrOo5t7NnNe46zW/tFgW6x/bCJG8FqQCEo3+Aro6EYUG4+cU+KJWu/X";
-
-    if cfg.static_css {
-        // create katex resource directory
-        let mut katex_dir_path = build_root.join(build_dir);
-        katex_dir_path.push("html/katex");
-        if !katex_dir_path.exists() {
-            std::fs::create_dir_all(katex_dir_path.as_path())?;
-        }
-
-        // download or fetch stylesheet content
-        let mut stylesheet_path = katex_dir_path.clone();
-        stylesheet_path.push("katex.min.css");
-
-        let mut stylesheet: String;
-        if !stylesheet_path.exists() {
-            // download stylesheet content
-            let stylesheet_response = reqwest::blocking::get(stylesheet_url)?;
-            stylesheet = String::from(std::str::from_utf8(&stylesheet_response.bytes()?)?);
-            // create stylesheet file and populate it with the content
-            let mut stylesheet_file = File::create(stylesheet_path.as_path())?;
-            stylesheet_file.write_all(stylesheet.as_str().as_bytes())?;
-        } else {
-            // read stylesheet content from disk
-            stylesheet = String::new();
-            let mut stylesheet_file = File::open(stylesheet_path.as_path())?;
-            stylesheet_file.read_to_string(&mut stylesheet)?;
-        }
-
-        // download all resources from stylesheet
-        lazy_static! {
-            static ref URL_PATTERN: Regex = Regex::new(r"(url)\s*[(]([^()]*)[)]").unwrap();
-            static ref REL_PATTERN: Regex = Regex::new(r"[.][.][/\\]|[.][/\\]").unwrap();
-        }
-        let mut resources: HashSet<String> = HashSet::new();
-        for capture in URL_PATTERN.captures_iter(&stylesheet) {
-            let resource_name = String::from(&capture[2]);
-            // sanitize resource path
-            let mut resource_path = katex_dir_path.clone();
-            resource_path.push(&resource_name);
-            resource_path = PathBuf::from(String::from(
-                REL_PATTERN.replace_all(resource_path.to_str().unwrap(), ""),
-            ));
-            // create resource path and populate content
-            if !resource_path.as_path().exists() {
-                // don't download resources if they already exist
-                if resources.insert(String::from(&capture[2])) {
-                    // create all leading directories
-                    let mut resource_parent_dir = resource_path.clone();
-                    resource_parent_dir.pop();
-                    std::fs::create_dir_all(resource_parent_dir.as_path())?;
-                    // create resource file
-                    let mut resource_file = File::create(resource_path)?;
-                    // download content
-                    let resource_url = format!("{}{}", cdn_root, &resource_name);
-                    let resource_response = reqwest::blocking::get(&resource_url)?;
-                    // populate file with content
-                    resource_file.write_all(&resource_response.bytes()?)?;
-                }
-            }
-        }
-
-        // return closure capable of generating relative paths to the katex
-        // resources
-        Ok(Box::new(move |path: String| -> String {
-            // generate a style element with a relative local path to
-            // the katex stylesheet
-            String::from(format!(
-                "<link rel=\"stylesheet\" href=\"{}katex/katex.min.css\">\n\n",
-                path,
-            ))
-        }))
-    } else {
-        let stylesheet = String::from(format!(
-            "<link rel=\"stylesheet\" href=\"{}\" integrity=\"{}\" crossorigin=\"anonymous\">\n\n",
-            stylesheet_url, integrity,
-        ));
-        Ok(Box::new(move |_: String| -> String { stylesheet.clone() }))
-    }
 }
 
 #[cfg(test)]
