@@ -113,6 +113,7 @@ impl KatexProcessor {
 
         let mut past_char = '\0';
         let mut in_codeblocks = false;
+        let mut in_math = false;
         for c in string.chars() {
             // println!("{}", temp_string);
             if '`' == c {
@@ -123,8 +124,18 @@ impl KatexProcessor {
                 }
             } else if in_codeblocks {
                 // do nothing: skip codeblocks
-            } else if '_' == c {
-                result.push('\\');
+            } else if '$' == c {
+                if '$' != past_char {
+                    in_math = !in_math;
+                }
+            } else if in_math {
+                if '_' == c {
+                    result.push('\\');
+                } else if '*' == c {
+                    result.push('\\');
+                } else if '\\' == c {
+                    result.push('\\');
+                }
             }
             result.push(c);
             past_char = c;
